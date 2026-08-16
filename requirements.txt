@@ -1,0 +1,7 @@
+streamlit
+requests
+python-dotenv
+pypdf
+duckduckgo-search
+gTTS
+qrcode[pil]
