@@ -10,6 +10,7 @@ Document Q&A, Image Generator, Code Runner.
 
 import os
 import time
+from datetime import datetime
 import streamlit as st
 import requests
 import urllib.parse
@@ -23,6 +24,8 @@ import search
 import voice
 import code_runner
 import tools
+import web_reader
+import users
 
 load_dotenv()
 
@@ -43,37 +46,61 @@ except Exception:
 st.set_page_config(page_title="AeroSphere", page_icon="\U0001F310", layout="wide", initial_sidebar_state="expanded")
 
 # ------------------------------------------------------------
-# LOGIN - agar APP_PASSWORD set hai, to password ke bina app nahi khulegi
+# LOGIN / SIGNUP - har user ka apna account, usage limit account ke saath judi
 # ------------------------------------------------------------
 try:
-    APP_PASSWORD = st.secrets.get("APP_PASSWORD", "")
+    SIGNUP_CODE = st.secrets.get("SIGNUP_CODE", "")
 except Exception:
-    APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+    SIGNUP_CODE = os.getenv("SIGNUP_CODE", "")
 
-if APP_PASSWORD:
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = None
 
-    if not st.session_state.authenticated:
-        st.markdown(
-            """
-            <div style="text-align:center; padding-top:80px;">
-                <h1>\U0001F310 AeroSphere</h1>
-                <p style="opacity:0.7;">Enter password to continue</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            entered = st.text_input("Password", type="password", key="login_password")
-            if st.button("Enter", use_container_width=True):
-                if entered == APP_PASSWORD:
-                    st.session_state.authenticated = True
+if not st.session_state.username:
+    st.markdown(
+        """
+        <div style="text-align:center; padding-top:60px; padding-bottom:20px;">
+            <h1>\U0001F310 AeroSphere</h1>
+            <p style="opacity:0.7;">Login or create an account to continue</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        login_tab, signup_tab = st.tabs(["Login", "Sign up"])
+
+        with login_tab:
+            login_username = st.text_input("Username", key="login_username")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            if st.button("Log in", use_container_width=True, key="login_btn"):
+                if users.verify_user(login_username, login_password):
+                    st.session_state.username = login_username.strip().lower()
+                    usage = users.get_usage(st.session_state.username)
+                    st.session_state.usage_count = usage["usage_count"]
+                    st.session_state.image_count = usage["image_count"]
+                    st.session_state.usage_window_start = usage["usage_window_start"]
                     st.rerun()
                 else:
-                    st.error("Wrong password.")
-        st.stop()
+                    st.error("Wrong username or password.")
+
+        with signup_tab:
+            signup_username = st.text_input("Choose a username", key="signup_username")
+            signup_password = st.text_input("Choose a password", type="password", key="signup_password")
+            if SIGNUP_CODE:
+                signup_code_entered = st.text_input("Invite code", type="password", key="signup_code")
+            else:
+                signup_code_entered = ""
+            if st.button("Create account", use_container_width=True, key="signup_btn"):
+                if SIGNUP_CODE and signup_code_entered != SIGNUP_CODE:
+                    st.error("Invalid invite code.")
+                else:
+                    success, message = users.create_user(signup_username, signup_password)
+                    if success:
+                        st.success(message + " You can now log in.")
+                    else:
+                        st.error(message)
+    st.stop()
 
 # AeroSphere ki apni identity - is se AI ko pata rahega ke usay kisne banaya
 SYSTEM_INFO = (
@@ -98,6 +125,39 @@ if "doc_messages" not in st.session_state:
     st.session_state.doc_messages = []
 if "glow_enabled" not in st.session_state:
     st.session_state.glow_enabled = True
+if "usage_count" not in st.session_state:
+    st.session_state.usage_count = 0
+if "image_count" not in st.session_state:
+    st.session_state.image_count = 0
+if "usage_window_start" not in st.session_state:
+    st.session_state.usage_window_start = time.time()
+
+# Ek session ke liye limits - taake API quota safe rahe jab sab log bina apni key ke use karein
+try:
+    MAX_MESSAGES_PER_SESSION = int(st.secrets.get("MAX_MESSAGES_PER_SESSION", "90"))
+    MAX_IMAGES_PER_SESSION = int(st.secrets.get("MAX_IMAGES_PER_SESSION", "8"))
+    COOLDOWN_HOURS = float(st.secrets.get("COOLDOWN_HOURS", "3"))
+except Exception:
+    MAX_MESSAGES_PER_SESSION = int(os.getenv("MAX_MESSAGES_PER_SESSION", "90"))
+    MAX_IMAGES_PER_SESSION = int(os.getenv("MAX_IMAGES_PER_SESSION", "8"))
+    COOLDOWN_HOURS = float(os.getenv("COOLDOWN_HOURS", "3"))
+
+
+def check_and_reset_usage_window():
+    """Agar cooldown time guzar chuka hai, to limit reset kar do (chat/history waisi hi rehti hai)."""
+    elapsed_hours = (time.time() - st.session_state.usage_window_start) / 3600
+    if elapsed_hours >= COOLDOWN_HOURS:
+        st.session_state.usage_count = 0
+        st.session_state.image_count = 0
+        st.session_state.usage_window_start = time.time()
+        if st.session_state.username:
+            users.update_usage(
+                st.session_state.username,
+                usage_count=0, image_count=0, usage_window_start=st.session_state.usage_window_start,
+            )
+
+
+check_and_reset_usage_window()
 
 lang = st.session_state.language
 
@@ -122,6 +182,14 @@ def call_gemini(contents):
 # SIDEBAR
 # ------------------------------------------------------------
 with st.sidebar:
+    st.markdown(f"**Logged in as:** {st.session_state.username}")
+    if st.button("Log out", use_container_width=True):
+        st.session_state.username = None
+        st.session_state.messages = []
+        st.session_state.doc_messages = []
+        st.rerun()
+
+    st.markdown("---")
     st.markdown(f"### {i18n.t(lang, 'settings')}")
 
     st.session_state.language = st.selectbox(
@@ -293,6 +361,24 @@ with st.sidebar:
 st.markdown(themes.css_for_theme(active_theme), unsafe_allow_html=True)
 
 # ------------------------------------------------------------
+# WARNING BANNER - jab 90% limit use ho jaye
+# ------------------------------------------------------------
+usage_percent = (st.session_state.usage_count / MAX_MESSAGES_PER_SESSION) * 100 if MAX_MESSAGES_PER_SESSION else 0
+if usage_percent >= 90:
+    reset_time = datetime.fromtimestamp(st.session_state.usage_window_start + COOLDOWN_HOURS * 3600)
+    reset_time_str = reset_time.strftime("%I:%M %p")
+    messages_left = max(MAX_MESSAGES_PER_SESSION - st.session_state.usage_count, 0)
+    st.markdown(
+        f"""
+        <div class="aero-warning-banner">
+            \u26A0\uFE0F Session limit almost reached ({messages_left} messages left).
+            Chat will pause and automatically continue at <strong>{reset_time_str}</strong>.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ------------------------------------------------------------
 # HEADER
 # ------------------------------------------------------------
 glow_class = " glow" if st.session_state.glow_enabled else ""
@@ -336,18 +422,40 @@ with tab_chat:
                 if msg["role"] == "assistant" and st.session_state.get("last_audio_idx") == i:
                     st.audio(st.session_state.get("last_audio_bytes"), format="audio/mp3")
 
+    remaining = MAX_MESSAGES_PER_SESSION - st.session_state.usage_count
+    if remaining <= 3:
+        st.caption(f"{max(remaining, 0)} messages left in this session.")
+
     user_input = st.chat_input(i18n.t(lang, "chat_placeholder"))
 
     if user_input:
         if not API_KEY:
             st.error(i18n.t(lang, "no_prompt_error"))
+        elif st.session_state.usage_count >= MAX_MESSAGES_PER_SESSION:
+            elapsed_hours = (time.time() - st.session_state.usage_window_start) / 3600
+            hours_left = max(COOLDOWN_HOURS - elapsed_hours, 0)
+            st.error(f"Session limit reached. Please wait about {hours_left:.1f} more hour(s) and your chat will continue right here, or add your own API key in the sidebar for unlimited use.")
         else:
+            st.session_state.usage_count += 1
+            if st.session_state.username:
+                users.update_usage(st.session_state.username, usage_count=st.session_state.usage_count)
             st.session_state.messages.append({"role": "user", "content": user_input})
 
             with st.spinner(i18n.t(lang, "thinking")):
                 try:
                     final_prompt = user_input
-                    if use_search:
+
+                    # Agar message mein koi link hai, us website ko khud padh lo
+                    found_url = web_reader.find_url(user_input)
+                    if found_url:
+                        page_text = web_reader.fetch_page_text(found_url)
+                        final_prompt = (
+                            f"The user shared this link: {found_url}\n"
+                            f"Page content:\n{page_text}\n\n"
+                            f"User's message: {user_input}\n\n"
+                            "Use the page content above to respond to the user."
+                        )
+                    elif use_search:
                         results = search.web_search(user_input)
                         final_prompt = (
                             f"Web search results:\n{results}\n\n"
@@ -442,7 +550,14 @@ with tab_image:
     if st.button(i18n.t(lang, "generate_image"), type="primary"):
         if not image_prompt:
             st.error(i18n.t(lang, "no_prompt_error"))
+        elif st.session_state.image_count >= MAX_IMAGES_PER_SESSION:
+            elapsed_hours = (time.time() - st.session_state.usage_window_start) / 3600
+            hours_left = max(COOLDOWN_HOURS - elapsed_hours, 0)
+            st.error(f"Session limit reached. Please wait about {hours_left:.1f} more hour(s) to generate more images.")
         else:
+            st.session_state.image_count += 1
+            if st.session_state.username:
+                users.update_usage(st.session_state.username, image_count=st.session_state.image_count)
             with st.spinner(i18n.t(lang, "generating")):
                 try:
                     width, height = size_map[aspect]

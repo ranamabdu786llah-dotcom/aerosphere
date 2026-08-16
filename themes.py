@@ -169,6 +169,22 @@ def css_for_theme(t: dict) -> str:
         flex-shrink: 0;
         animation: aeroLogoFloat 5s ease-in-out infinite;
     }}
+
+    /* Session limit warning banner - glowing red */
+    .aero-warning-banner {{
+        background: linear-gradient(90deg, #B4173F22, #B4173F11);
+        border: 1px solid #B4173F88;
+        color: {t['text']};
+        padding: 12px 18px;
+        border-radius: 10px;
+        margin-bottom: 16px;
+        font-size: 14px;
+        animation: aeroWarningGlow 2s ease-in-out infinite;
+    }}
+    @keyframes aeroWarningGlow {{
+        0%, 100% {{ box-shadow: 0 0 8px #B4173F44; }}
+        50% {{ box-shadow: 0 0 22px #B4173F99; }}
+    }}
     .aero-logo-badge.glow {{
         animation: aeroLogoFloat 5s ease-in-out infinite, aeroGlowPulse 2.4s ease-in-out infinite;
     }}
