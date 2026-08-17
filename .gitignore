@@ -4,3 +4,4 @@ __pycache__/
 chats/
 todos.json
 users.json
+memory_notes.json

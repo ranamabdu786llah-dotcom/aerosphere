@@ -10,11 +10,13 @@ Document Q&A, Image Generator, Code Runner.
 
 import os
 import time
+import base64
 from datetime import datetime
 import streamlit as st
 import requests
 import urllib.parse
 from dotenv import load_dotenv
+from audio_recorder_streamlit import audio_recorder
 
 import themes
 import i18n
@@ -26,6 +28,7 @@ import code_runner
 import tools
 import web_reader
 import users
+import memory
 
 load_dotenv()
 
@@ -167,9 +170,11 @@ def call_gemini(contents):
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-3.5-flash-lite:generateContent?key={API_KEY}"
     )
+    memory_text = memory.notes_as_text(st.session_state.username) if st.session_state.username else ""
+    full_system = SYSTEM_INFO + ("\n\n" + memory_text if memory_text else "")
     body = {
         "contents": contents,
-        "systemInstruction": {"parts": [{"text": SYSTEM_INFO}]},
+        "systemInstruction": {"parts": [{"text": full_system}]},
     }
     response = requests.post(url, json=body, timeout=45)
     data = response.json()
@@ -333,6 +338,22 @@ with st.sidebar:
             else:
                 st.error(i18n.t(lang, "meeting_error"))
 
+    with st.expander("Memory Notes"):
+        st.caption("Save things you want AeroSphere to always remember about you.")
+        new_note = st.text_input("New memory", key="new_memory_note", placeholder="e.g. I run a YouTube channel called Art Mylo")
+        if st.button("Save memory", key="add_memory_btn"):
+            if new_note.strip():
+                memory.add_note(st.session_state.username, new_note.strip())
+                st.rerun()
+        for idx, note in enumerate(memory.get_notes(st.session_state.username)):
+            c1, c2 = st.columns([5, 1])
+            with c1:
+                st.markdown(f"- {note}")
+            with c2:
+                if st.button("x", key=f"mem_del_{idx}"):
+                    memory.delete_note(st.session_state.username, idx)
+                    st.rerun()
+
     if not API_KEY:
         st.markdown("---")
         st.warning("Gemini API key nahi mili.")
@@ -407,11 +428,17 @@ tab_code = _tabs[3] if ENABLE_CODE_RUNNER else None
 # TAB 1: CHAT
 # ==============================================================
 with tab_chat:
-    col_a, col_b = st.columns(2)
+    col_a, col_b, col_c = st.columns([1, 1, 1.4])
     with col_a:
         use_search = st.checkbox(i18n.t(lang, "web_search_toggle"))
     with col_b:
         use_voice = st.checkbox(i18n.t(lang, "voice_reply_toggle"))
+    with col_c:
+        uploaded_image = st.file_uploader("Attach an image", type=["png", "jpg", "jpeg"],
+                                           key="chat_image_upload", label_visibility="collapsed")
+
+    st.caption("Or record a voice message:")
+    recorded_audio = audio_recorder(text="", icon_size="1x", key="chat_audio_recorder")
 
     # Sirf ye box scroll hota hai - header, tabs, checkboxes, input sab apni jagah fix rahenge
     chat_box = st.container(height=430)
@@ -427,6 +454,13 @@ with tab_chat:
         st.caption(f"{max(remaining, 0)} messages left in this session.")
 
     user_input = st.chat_input(i18n.t(lang, "chat_placeholder"))
+
+    # Voice message bhi ek chat turn ki tarah treat hota hai
+    new_voice_message = False
+    if recorded_audio and recorded_audio != st.session_state.get("last_recorded_audio"):
+        st.session_state.last_recorded_audio = recorded_audio
+        new_voice_message = True
+        user_input = "(voice message)"
 
     if user_input:
         if not API_KEY:
@@ -444,30 +478,51 @@ with tab_chat:
             with st.spinner(i18n.t(lang, "thinking")):
                 try:
                     final_prompt = user_input
+                    extra_parts = []
 
-                    # Agar message mein koi link hai, us website ko khud padh lo
-                    found_url = web_reader.find_url(user_input)
-                    if found_url:
-                        page_text = web_reader.fetch_page_text(found_url)
-                        final_prompt = (
-                            f"The user shared this link: {found_url}\n"
-                            f"Page content:\n{page_text}\n\n"
-                            f"User's message: {user_input}\n\n"
-                            "Use the page content above to respond to the user."
-                        )
-                    elif use_search:
-                        results = search.web_search(user_input)
-                        final_prompt = (
-                            f"Web search results:\n{results}\n\n"
-                            f"User question: {user_input}\n\n"
-                            "Use the search results above to answer, and mention sources briefly."
-                        )
+                    if new_voice_message:
+                        extra_parts.append({
+                            "inline_data": {
+                                "mime_type": "audio/wav",
+                                "data": base64.b64encode(recorded_audio).decode("utf-8"),
+                            }
+                        })
+                        final_prompt = "The user sent a voice message. Listen to it and respond naturally to what they said."
+                    elif uploaded_image is not None:
+                        image_bytes = uploaded_image.getvalue()
+                        mime = "image/png" if uploaded_image.type == "image/png" else "image/jpeg"
+                        extra_parts.append({
+                            "inline_data": {
+                                "mime_type": mime,
+                                "data": base64.b64encode(image_bytes).decode("utf-8"),
+                            }
+                        })
+                    else:
+                        # Agar message mein koi link hai, us website ko khud padh lo
+                        found_url = web_reader.find_url(user_input)
+                        if found_url:
+                            page_text = web_reader.fetch_page_text(found_url)
+                            final_prompt = (
+                                f"The user shared this link: {found_url}\n"
+                                f"Page content:\n{page_text}\n\n"
+                                f"User's message: {user_input}\n\n"
+                                "Use the page content above to respond to the user."
+                            )
+                        elif use_search:
+                            results = search.web_search(user_input)
+                            final_prompt = (
+                                f"Web search results:\n{results}\n\n"
+                                f"User question: {user_input}\n\n"
+                                "Use the search results above to answer, and mention sources briefly."
+                            )
 
                     contents = []
                     for m in st.session_state.messages[:-1]:
                         role = "user" if m["role"] == "user" else "model"
                         contents.append({"role": role, "parts": [{"text": m["content"]}]})
-                    contents.append({"role": "user", "parts": [{"text": final_prompt}]})
+
+                    last_parts = [{"text": final_prompt}] + extra_parts
+                    contents.append({"role": "user", "parts": last_parts})
 
                     reply = call_gemini(contents)
                     st.session_state.messages.append({"role": "assistant", "content": reply})
