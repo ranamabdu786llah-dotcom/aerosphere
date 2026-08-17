@@ -6,3 +6,4 @@ duckduckgo-search
 gTTS
 qrcode[pil]
 audio-recorder-streamlit
+streamlit-cookies-manager

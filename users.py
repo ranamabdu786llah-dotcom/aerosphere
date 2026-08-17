@@ -66,6 +66,12 @@ def verify_user(username: str, password: str) -> bool:
     return _hash_password(password, user["salt"]) == user["password_hash"]
 
 
+def user_exists(username: str) -> bool:
+    """Sirf ye check karta hai ke username registered hai ya nahi (cookie se restore karte waqt password na chahiye ho)."""
+    users = _load_users()
+    return username.strip().lower() in users
+
+
 def get_usage(username: str) -> dict:
     users = _load_users()
     username = username.strip().lower()

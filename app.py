@@ -17,6 +17,7 @@ import requests
 import urllib.parse
 from dotenv import load_dotenv
 from audio_recorder_streamlit import audio_recorder
+from streamlit_cookies_manager import EncryptedCookieManager
 
 import themes
 import i18n
@@ -49,6 +50,18 @@ except Exception:
 st.set_page_config(page_title="AeroSphere", page_icon="\U0001F310", layout="wide", initial_sidebar_state="expanded")
 
 # ------------------------------------------------------------
+# COOKIES - taake login refresh ke baad bhi yaad rahe
+# ------------------------------------------------------------
+try:
+    COOKIE_PASSWORD = st.secrets.get("COOKIE_PASSWORD", "aerosphere-default-cookie-key")
+except Exception:
+    COOKIE_PASSWORD = os.getenv("COOKIE_PASSWORD", "aerosphere-default-cookie-key")
+
+cookies = EncryptedCookieManager(prefix="aerosphere/", password=COOKIE_PASSWORD)
+if not cookies.ready():
+    st.stop()
+
+# ------------------------------------------------------------
 # LOGIN / SIGNUP - har user ka apna account, usage limit account ke saath judi
 # ------------------------------------------------------------
 try:
@@ -57,7 +70,16 @@ except Exception:
     SIGNUP_CODE = os.getenv("SIGNUP_CODE", "")
 
 if "username" not in st.session_state:
-    st.session_state.username = None
+    # Pehle cookie mein dekho koi already logged-in user to nahi
+    cookie_username = cookies.get("username")
+    if cookie_username and users.user_exists(cookie_username):
+        st.session_state.username = cookie_username
+        usage = users.get_usage(cookie_username)
+        st.session_state.usage_count = usage["usage_count"]
+        st.session_state.image_count = usage["image_count"]
+        st.session_state.usage_window_start = usage["usage_window_start"]
+    else:
+        st.session_state.username = None
 
 if not st.session_state.username:
     st.markdown(
@@ -78,8 +100,11 @@ if not st.session_state.username:
             login_password = st.text_input("Password", type="password", key="login_password")
             if st.button("Log in", use_container_width=True, key="login_btn"):
                 if users.verify_user(login_username, login_password):
-                    st.session_state.username = login_username.strip().lower()
-                    usage = users.get_usage(st.session_state.username)
+                    clean_username = login_username.strip().lower()
+                    st.session_state.username = clean_username
+                    cookies["username"] = clean_username
+                    cookies.save()
+                    usage = users.get_usage(clean_username)
                     st.session_state.usage_count = usage["usage_count"]
                     st.session_state.image_count = usage["image_count"]
                     st.session_state.usage_window_start = usage["usage_window_start"]
@@ -192,6 +217,8 @@ with st.sidebar:
         st.session_state.username = None
         st.session_state.messages = []
         st.session_state.doc_messages = []
+        cookies["username"] = ""
+        cookies.save()
         st.rerun()
 
     st.markdown("---")
